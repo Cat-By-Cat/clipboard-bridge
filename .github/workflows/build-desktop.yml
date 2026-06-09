@@ -44,6 +44,17 @@ jobs:
           projectPath: desktop
           includeDebug: false
 
+      - name: Collect release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Get-ChildItem -Path desktop/src-tauri/target/release/bundle -Recurse -Include *.msi,*.exe,*.dmg | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination release-assets
+          }
+          Get-ChildItem -Path desktop/src-tauri/target/release/bundle -Recurse -Directory -Filter *.app | ForEach-Object {
+            Compress-Archive -LiteralPath $_.FullName -DestinationPath (Join-Path release-assets ($_.BaseName + '.app.zip')) -Force
+          }
+
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
         with:
@@ -54,3 +65,10 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*.dmg
             desktop/src-tauri/target/release/bundle/**/*.app
           if-no-files-found: warn
+
+      - name: Upload desktop bundles to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          fail_on_unmatched_files: false
