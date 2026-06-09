@@ -5,6 +5,7 @@ build/
 .env.local
 server/data/
 server/uploads/
+server/uploads-test/
 **/.gradle/
 **/target/
 android/app/build/
