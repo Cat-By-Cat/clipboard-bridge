@@ -99,13 +99,23 @@ jobs:
       - name: Collect release assets
         shell: bash
         run: |
-          shopt -s globstar nullglob
           release_assets="$(pwd)/release-assets"
           mkdir -p "$release_assets"
 
-          for file in desktop/src-tauri/target/release/bundle/**/*.msi desktop/src-tauri/target/release/bundle/**/*.exe desktop/src-tauri/target/release/bundle/**/*.dmg; do
-            cp "$file" "$release_assets/"
-          done
+          find desktop/src-tauri/target/release/bundle -type f -name '*.msi' -print |
+            while IFS= read -r file; do
+              cp "$file" "$release_assets/"
+            done
+
+          find desktop/src-tauri/target/release/bundle -type f -name '*.exe' -print |
+            while IFS= read -r file; do
+              cp "$file" "$release_assets/"
+            done
+
+          find desktop/src-tauri/target/release/bundle -type f -name '*.dmg' -print |
+            while IFS= read -r file; do
+              cp "$file" "$release_assets/"
+            done
 
           while IFS= read -r app; do
             name="$(basename "$app" .app)"
