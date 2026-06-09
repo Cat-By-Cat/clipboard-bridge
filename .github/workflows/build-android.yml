@@ -35,7 +35,7 @@ jobs:
           chmod +x gradle-8.9/bin/gradle
 
       - name: Build debug APK
-        run: ./gradle-8.9/bin/gradle -p android :app:assembleDebug
+        run: ./gradle-8.9/bin/gradle -p android :app:assembleDebug -Pandroid.useAndroidX=true -Pandroid.nonTransitiveRClass=true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
