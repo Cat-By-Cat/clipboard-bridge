@@ -1,0 +1,13 @@
+{
+  "name": "sync-clipboard-suite",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["server", "desktop"],
+  "scripts": {
+    "server:dev": "npm --workspace server run dev",
+    "server:start": "npm --workspace server start",
+    "server:test": "npm --workspace server test",
+    "desktop:dev": "npm --workspace desktop run dev",
+    "desktop:tauri": "npm --workspace desktop run tauri:dev"
+  }
+}
