@@ -11,6 +11,13 @@ async function api(path:string, session:Pick<Session,'serverUrl'|'accessToken'>,
   if(!res.ok) throw new Error(await res.text()); return res.json();
 }
 
+async function deriveSyncKey(email:string, password:string){
+  const normalized = `${email.trim().toLowerCase()}:${password}`;
+  const bytes = new TextEncoder().encode(normalized);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
 function App(){
   const [serverUrl,setServerUrl]=useState(localStorage.serverUrl||'http://localhost:8787');
   const [email,setEmail]=useState(''); const [password,setPassword]=useState('');
@@ -26,7 +33,7 @@ function App(){
     const auth=await res.json();
     const publicKey=await invoke<string>('device_public_key');
     const dev=await api('/devices/register',{serverUrl,accessToken:auth.accessToken},{method:'POST',body:JSON.stringify({name:await invoke('device_name'),platform:await invoke('platform'),publicKey})});
-    const syncKey=localStorage.syncKey || crypto.randomUUID().replace(/-/g,''); localStorage.syncKey=syncKey;
+    const syncKey=await deriveSyncKey(email,password); localStorage.syncKey=syncKey;
     const s={serverUrl,accessToken:auth.accessToken,deviceId:dev.device.id,syncKey}; localStorage.session=JSON.stringify(s); localStorage.serverUrl=serverUrl; setSession(s); addLog('登录成功，设备已注册');
   }
   async function loadDevices(){ if(session) setDevices((await api('/devices',session)).devices); }

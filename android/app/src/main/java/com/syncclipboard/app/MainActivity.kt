@@ -84,7 +84,7 @@ class MainActivity : AppCompatActivity() {
                         .digest(Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID).toByteArray())
                         .joinToString("") { "%02x".format(it) }
                     val device = api.registerDevice(serverUrl, token, Build.MODEL ?: "Android", publicKey)
-                    Session(serverUrl, token, device.getString("id"), store.getOrCreateSyncKey())
+                    Session(serverUrl, token, device.getString("id"), store.deriveSyncKey(email, password))
                 }
             }.onSuccess {
                 store.save(it)

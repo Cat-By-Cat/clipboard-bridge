@@ -1,6 +1,6 @@
-# ???? v1
+# Sync Protocol v1
 
-## REST
+## REST API
 
 - `POST /auth/register` `{ email, password }` -> `{ accessToken, refreshToken, user }`
 - `POST /auth/login` `{ email, password }` -> `{ accessToken, refreshToken, user }`
@@ -19,9 +19,9 @@
 
 ## WebSocket
 
-???`ws://host/ws?token=<accessToken>&deviceId=<deviceId>`
+Connection URL: `ws://host/ws?token=<accessToken>&deviceId=<deviceId>`
 
-???????
+Event shape:
 
 ```json
 {
@@ -34,7 +34,7 @@
 }
 ```
 
-?????
+Event types:
 
 - `device.online`
 - `device.offline`
@@ -46,10 +46,10 @@
 - `pairing.request`
 - `pairing.confirmed`
 
-## ?????
+## Deduplication
 
-????????? `contentHash` ????????
+Clients use `contentHash` to prevent clipboard echo loops:
 
-1. ???????????? hash???????? hash?
-2. ?????????????????????
-3. ????????????????
+1. Calculate a hash of plaintext before sending and include it with the event.
+2. After receiving remote clipboard content, update the local last hash before writing to the system clipboard.
+3. Skip sending on the next polling cycle when the hash matches.

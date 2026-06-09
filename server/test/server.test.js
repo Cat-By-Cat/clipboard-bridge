@@ -6,7 +6,7 @@ process.env.REFRESH_SECRET='test';
 process.env.UPLOAD_DIR='./uploads-test';
 const { buildApp } = await import('../src/index.js');
 
-test('??????????????????', async()=>{
+test('registers a device, syncs clipboard, uploads and downloads a file', async()=>{
   const app=await buildApp();
   const reg=await app.inject({method:'POST',url:'/auth/register',payload:{email:'a@test.com',password:'password123'}});
   assert.equal(reg.statusCode,200); const token=reg.json().accessToken;

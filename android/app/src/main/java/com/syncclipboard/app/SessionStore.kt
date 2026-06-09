@@ -1,7 +1,7 @@
 package com.syncclipboard.app
 
 import android.content.Context
-import java.util.UUID
+import java.security.MessageDigest
 
 data class Session(
     val serverUrl: String,
@@ -32,11 +32,10 @@ class SessionStore(context: Context) {
 
     fun clear() = prefs.edit().clear().apply()
 
-    fun getOrCreateSyncKey(): String {
-        val existing = prefs.getString("syncKey", null)
-        if (existing != null) return existing
-        val generated = UUID.randomUUID().toString().replace("-", "")
-        prefs.edit().putString("syncKey", generated).apply()
-        return generated
+    fun deriveSyncKey(email: String, password: String): String {
+        val normalized = "${email.trim().lowercase()}:$password"
+        return MessageDigest.getInstance("SHA-256")
+            .digest(normalized.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
     }
 }
