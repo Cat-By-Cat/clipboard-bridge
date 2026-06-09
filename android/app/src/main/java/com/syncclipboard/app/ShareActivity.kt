@@ -9,20 +9,20 @@ import android.widget.TextView
 class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val uri = intent.getParcelableExtra<Uri>(android.content.Intent.EXTRA_STREAM)
-        val text = intent.getCharSequenceExtra(android.content.Intent.EXTRA_TEXT)?.toString()
+        val sharedUri = intent.getParcelableExtra<Uri>(android.content.Intent.EXTRA_STREAM)
+        val sharedText = intent.getCharSequenceExtra(android.content.Intent.EXTRA_TEXT)?.toString()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
             addView(TextView(this@ShareActivity).apply {
                 textSize = 20f
-                text = "已收到分享内容"
+                this.text = "Shared content received"
             })
             addView(TextView(this@ShareActivity).apply {
-                text = when {
-                    uri != null -> "文件/图片 URI：$uri\n首版已接入分享入口，后续会在这里选择目标设备并上传加密文件。"
-                    text != null -> "文本：$text"
-                    else -> "没有可处理的内容"
+                this.text = when {
+                    sharedUri != null -> "File or image URI: $sharedUri\nThe share entry is ready. Target-device upload will be wired here."
+                    sharedText != null -> "Text: $sharedText"
+                    else -> "No supported content"
                 }
             })
         }
