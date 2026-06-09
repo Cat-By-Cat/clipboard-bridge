@@ -86,11 +86,11 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "????", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "??", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             let _tray = TrayIconBuilder::with_id("main")
-                .tooltip("???????????")
+                .tooltip("剪贴板同步正在运行")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => { if let Some(w) = app.get_webview_window("main") { let _ = w.show(); let _ = w.set_focus(); } },
@@ -103,5 +103,6 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![device_name, platform, device_public_key, poll_clipboard, apply_remote_clipboard, encrypt_and_pick_file])
         .run(tauri::generate_context!())
-        .expect("?? Tauri ????");
+        .expect("运行 Tauri 应用失败");
 }
+
