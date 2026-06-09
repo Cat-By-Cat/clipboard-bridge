@@ -20,8 +20,10 @@ jobs:
         include:
           - platform: windows-latest
             artifact-name: sync-clipboard-windows
+            bundle-target: msi
           - platform: macos-latest
             artifact-name: sync-clipboard-macos
+            bundle-target: dmg
 
     runs-on: ${{ matrix.platform }}
 
@@ -32,33 +34,83 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install JavaScript dependencies
-        run: npm ci --include=optional
-
-      - name: Build desktop installer
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cache Tauri bundler tools
+        uses: actions/cache@v4
         with:
-          projectPath: desktop
-          includeDebug: false
+          path: desktop/src-tauri/target/.tauri
+          key: ${{ runner.os }}-tauri-bundler-tools-v1
 
-      - name: Collect release assets
+      - name: Install Windows bundler tools
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          Get-ChildItem -Path desktop/src-tauri/target/release/bundle -Recurse -Include *.msi,*.exe,*.dmg | ForEach-Object {
-            Copy-Item -LiteralPath $_.FullName -Destination release-assets
+          choco install wixtoolset -y --no-progress
+
+          $wixBin = @(
+            $env:WIX | ForEach-Object { if ($_ ) { Join-Path $_ 'bin' } }
+            Get-ChildItem 'C:\Program Files (x86)' -Directory -Filter 'WiX Toolset*' -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending |
+              ForEach-Object { Join-Path $_.FullName 'bin' }
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ 'candle.exe')) } | Select-Object -First 1
+
+          if (-not $wixBin) {
+            throw 'WiX Toolset was installed but candle.exe could not be found.'
           }
-          Get-ChildItem -Path desktop/src-tauri/target/release/bundle -Recurse -Directory -Filter *.app | ForEach-Object {
-            Compress-Archive -LiteralPath $_.FullName -DestinationPath (Join-Path release-assets ($_.BaseName + '.app.zip')) -Force
-          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "WIX=$($wixBin | Split-Path -Parent)"
+          Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+
+      - name: Install JavaScript dependencies
+        shell: bash
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config set replace-registry-host always
+          npm cache verify
+
+          max_attempts=3
+          for attempt in $(seq 1 "$max_attempts"); do
+            if npm ci --include=optional --registry=https://registry.npmjs.org/ --replace-registry-host=always; then
+              break
+            else
+              status=$?
+            fi
+
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              exit "$status"
+            fi
+
+            npm cache clean --force
+            sleep $((10 * attempt))
+          done
+
+          npm exec --workspace desktop -- tsc --version
+          npm exec --workspace desktop -- vite --version
+
+      - name: Build desktop installer
+        run: npm --workspace desktop run tauri -- build --bundles ${{ matrix.bundle-target }} --ci
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          release_assets="$(pwd)/release-assets"
+          mkdir -p "$release_assets"
+
+          for file in desktop/src-tauri/target/release/bundle/**/*.msi desktop/src-tauri/target/release/bundle/**/*.exe desktop/src-tauri/target/release/bundle/**/*.dmg; do
+            cp "$file" "$release_assets/"
+          done
+
+          while IFS= read -r app; do
+            name="$(basename "$app" .app)"
+            (cd "$(dirname "$app")" && zip -qry "$release_assets/$name.app.zip" "$(basename "$app")")
+          done < <(find desktop/src-tauri/target/release/bundle -type d -name '*.app')
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
