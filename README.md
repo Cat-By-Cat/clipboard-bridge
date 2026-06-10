@@ -1,52 +1,43 @@
-# Clipboard Bridge
+# Sentbox Web
 
-Clipboard Bridge is an MVP for syncing clipboard text and encrypted file payloads across devices. Devices logged in with the same account password derive the same local sync key, so clipboard ciphertext can be decrypted across desktop and Android clients.
+Sentbox Web 是一个网页端多端发送工具。一个账号可以在多个浏览器或设备同时登录，发送文本或文件后，所有在线端都会实时刷新已发送列表。
 
-- `server/`: relay service with authentication, device registration, WebSocket event forwarding, file upload/download APIs, and Docker Compose deployment.
-- `desktop/`: Tauri + React desktop client for Windows and macOS with login, device selection, clipboard sync, and file sending UI.
-- `android/`: Kotlin Android client with login/register, device registration, a foreground sync service, and clipboard sync support.
-- `shared/`: protocol and cryptography design notes.
+## 功能
 
-> This repository is an MVP skeleton. Production usage still needs stronger end-to-end key exchange, file chunk integrity checks, richer permission prompts, and platform-specific mobile background behavior handling. Desktop builds require Rust and Tauri tooling. Android builds require Android Studio and the Android SDK.
+- 邮箱和密码注册、登录、刷新会话。
+- 发送文本和文件。
+- 已发送列表支持复制文本、下载文件、浏览器原生预览文件。
+- 发送时可标记为隐私。
+- 隐私内容默认隐藏；开启隐私模式并验证登录密码后才可见。
+- WebSocket 实时通知同账号多端刷新。
 
-## Local development
+## 本地开发
 
 ```powershell
 npm install
 Copy-Item server/.env.example server/.env
+docker compose -f server/docker-compose.yml up -d postgres
 npm run server:dev
+npm run web:dev
 ```
 
-Health check: <http://localhost:8787/health>
+默认服务端地址是 <http://localhost:8787>，网页开发地址是 <http://localhost:5173>。
 
-## Docker deployment
-
-```powershell
-cd server
-docker compose up -d --build
-```
-
-The service listens on port `8787` by default.
-
-## Desktop client
-
-Install Rust and Tauri prerequisites first.
+## 生产构建
 
 ```powershell
 npm install
-npm run desktop:dev
-# Start the Tauri development window
-npm run desktop:tauri
-# Build a Windows installer
-npm --workspace desktop run tauri -- build --bundles msi --ci
+npm run build
+npm start
 ```
 
-## Android client
+服务端会在 `web/dist` 存在时托管静态网页。
 
-Open the `android/` directory in Android Studio, wait for Gradle sync, then run the `app` module. The package name is `com.syncclipboard.app`.
+## 测试
 
-For the Android emulator, the default local server URL is `http://10.0.2.2:8787`. For a physical device, use the computer LAN address, for example `http://192.168.x.x:8787`.
+服务端集成测试需要 PostgreSQL。设置 `TEST_DATABASE_URL` 后运行：
 
-## Notes
-
-Android 10 and later restrict background clipboard access. This project keeps a foreground service online and syncs clipboard content when the OS allows it. Some vendor ROMs may require notification, background execution, or battery optimization permissions.
+```powershell
+$env:TEST_DATABASE_URL="postgres://sync:sync@localhost:5432/sync_clipboard"
+npm test
+```

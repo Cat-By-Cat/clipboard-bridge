@@ -15,8 +15,10 @@ services:
       timeout: 5s
       retries: 10
 
-  relay:
-    build: .
+  app:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -25,12 +27,12 @@ services:
       DATABASE_URL: postgres://sync:sync@postgres:5432/sync_clipboard
       JWT_SECRET: change-me-in-production
       REFRESH_SECRET: change-me-too
-      UPLOAD_DIR: /app/uploads
-      FILE_RETENTION_DAYS: 7
+      UPLOAD_DIR: /app/server/uploads
       MAX_FILE_BYTES: 1073741824
       CORS_ORIGIN: '*'
+      WEB_DIST_DIR: /app/web/dist
     volumes:
-      - uploads:/app/uploads
+      - uploads:/app/server/uploads
     ports:
       - "8787:8787"
 

@@ -1,13 +1,20 @@
 {
-  "name": "sync-clipboard-suite",
+  "name": "sentbox-web-suite",
   "private": true,
-  "version": "0.1.0",
-  "workspaces": ["server", "desktop"],
+  "version": "1.0.0",
+  "workspaces": [
+    "server",
+    "web"
+  ],
   "scripts": {
+    "dev": "npm --workspace server run dev",
     "server:dev": "npm --workspace server run dev",
     "server:start": "npm --workspace server start",
     "server:test": "npm --workspace server test",
-    "desktop:dev": "npm --workspace desktop run dev",
-    "desktop:tauri": "npm --workspace desktop run tauri:dev"
+    "web:dev": "npm --workspace web run dev",
+    "web:build": "npm --workspace web run build",
+    "build": "npm --workspace web run build",
+    "start": "npm --workspace server start",
+    "test": "npm --workspace server test"
   }
 }

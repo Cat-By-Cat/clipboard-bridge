@@ -1,177 +1,311 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import websocket from '@fastify/websocket';
 import multipart from '@fastify/multipart';
+import staticFiles from '@fastify/static';
 import bcrypt from 'bcryptjs';
-import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { createWriteStream } from 'node:fs';
+import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initDb, isMemory, getMem, q } from './db.js';
-import { signAccess, verifyAccess, newRefreshToken } from './tokens.js';
-import { addSocket, broadcastToUser, sendToDevices } from './events.js';
+import { initDb, q } from './db.js';
+import { newRefreshToken, signAccess, signPrivacy, verifyAccess, verifyPrivacy } from './tokens.js';
+import { addEventClient, broadcastUserChanged } from './realtime.js';
 
-const uploadDir = process.env.UPLOAD_DIR || './uploads';
-const retentionDays = Number(process.env.FILE_RETENTION_DAYS || 7);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, '..', 'uploads'));
 const maxFileBytes = Number(process.env.MAX_FILE_BYTES || 1073741824);
 
-function publicUser(u){ return { id:u.id, email:u.email, createdAt:u.created_at || u.createdAt }; }
-function nowIso(){ return new Date().toISOString(); }
-function expires(days=retentionDays){ return new Date(Date.now()+days*86400000); }
-function authPreHandler(){ return async (req, reply)=>{
-  const h=req.headers.authorization||''; const token=h.startsWith('Bearer ')?h.slice(7):null;
-  if(!token) return reply.code(401).send({error:'missing_token'});
-  try{ req.auth=verifyAccess(token); req.userId=req.auth.sub; }catch{ return reply.code(401).send({error:'invalid_token'}); }
-};}
-async function saveRefresh(userId, token){
-  const expiresAt = new Date(Date.now()+30*86400000);
-  if(isMemory()) getMem().refreshTokens.push({token,user_id:userId,expires_at:expiresAt});
-  else await q('insert into refresh_tokens(token,user_id,expires_at) values($1,$2,$3)',[token,userId,expiresAt]);
+function publicUser(row) {
+  return { id: row.id, email: row.email, createdAt: row.created_at };
 }
-async function issue(userId){ const refreshToken=newRefreshToken(); await saveRefresh(userId,refreshToken); return {accessToken:signAccess(userId),refreshToken}; }
-async function findUserByEmail(email){
-  if(isMemory()) return getMem().users.find(u=>u.email===email);
-  return (await q('select * from users where email=$1',[email])).rows[0];
+
+function publicItem(row) {
+  return {
+    id: row.id,
+    type: row.type,
+    textContent: row.text_content,
+    fileId: row.file_id,
+    fileName: row.file_name,
+    mimeType: row.mime_type,
+    size: row.size == null ? null : Number(row.size),
+    isPrivate: row.is_private,
+    createdAt: row.created_at
+  };
 }
-async function findDevice(userId, id){
-  if(isMemory()) return getMem().devices.find(d=>d.user_id===userId && d.id===id);
-  return (await q('select * from devices where user_id=$1 and id=$2',[userId,id])).rows[0];
+
+function sanitizeFileName(name) {
+  return String(name || 'file').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 180) || 'file';
+}
+
+async function saveUploadStream(stream, storagePath) {
+  const writer = createWriteStream(storagePath);
+  let size = 0;
+  try {
+    for await (const chunk of stream) {
+      size += chunk.length;
+      if (!writer.write(chunk)) {
+        await new Promise((resolve) => writer.once('drain', resolve));
+      }
+    }
+    await new Promise((resolve, reject) => {
+      writer.end(resolve);
+      writer.once('error', reject);
+    });
+    return size;
+  } catch (error) {
+    writer.destroy();
+    throw error;
+  }
+}
+
+function authPreHandler() {
+  return async (req, reply) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token) return reply.code(401).send({ error: 'missing_token' });
+    try {
+      const payload = verifyAccess(token);
+      req.userId = payload.sub;
+    } catch {
+      return reply.code(401).send({ error: 'invalid_token' });
+    }
+  };
+}
+
+function getPrivacyToken(req) {
+  return req.headers['x-privacy-token'] || req.query?.privacyToken;
+}
+
+function requirePrivacy(req, reply) {
+  try {
+    verifyPrivacy(getPrivacyToken(req), req.userId);
+    return true;
+  } catch {
+    reply.code(403).send({ error: 'privacy_verification_required' });
+    return false;
+  }
+}
+
+async function issueTokens(userId) {
+  const refreshToken = newRefreshToken();
+  await q(
+    'insert into refresh_tokens(token, user_id, expires_at) values($1, $2, now() + interval \'30 days\')',
+    [refreshToken, userId]
+  );
+  return { accessToken: signAccess(userId), refreshToken };
+}
+
+async function findUserByEmail(email) {
+  return (await q('select * from users where email=$1', [email.trim().toLowerCase()])).rows[0];
+}
+
+async function itemForFile(fileId, userId) {
+  return (await q(
+    `select si.*, f.storage_path
+       from sent_items si
+       join files f on f.id = si.file_id
+      where si.file_id = $1 and si.user_id = $2`,
+    [fileId, userId]
+  )).rows[0];
 }
 
 export async function buildApp() {
-  await mkdir(uploadDir,{recursive:true});
+  await mkdir(uploadDir, { recursive: true });
   await initDb();
-  const app=Fastify({logger:{level:process.env.LOG_LEVEL||'info'}});
-  await app.register(cors,{origin:process.env.CORS_ORIGIN||'*'});
-  await app.register(websocket);
-  await app.register(multipart,{limits:{fileSize:maxFileBytes}});
-  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
 
-  app.get('/health', async()=>({ok:true, service:'sync-relay', time:nowIso()}));
+  const app = Fastify({ logger: { level: process.env.LOG_LEVEL || 'info' } });
+  await app.register(cors, {
+    origin: process.env.CORS_ORIGIN || true,
+    credentials: true
+  });
+  await app.register(multipart, { limits: { fileSize: maxFileBytes } });
 
-  app.post('/auth/register', async(req, reply)=>{
-    const {email,password}=req.body||{};
-    if(!email || !password || password.length<8) return reply.code(400).send({error:'email_and_password_min_8_required'});
-    if(await findUserByEmail(email)) return reply.code(409).send({error:'email_exists'});
-    const user={id:randomUUID(),email,password_hash:await bcrypt.hash(password,10),created_at:new Date()};
-    if(isMemory()) getMem().users.push(user); else await q('insert into users(id,email,password_hash) values($1,$2,$3)',[user.id,user.email,user.password_hash]);
-    return {...await issue(user.id), user:publicUser(user)};
+  app.get('/health', async () => ({ ok: true, service: 'sentbox-web', time: new Date().toISOString() }));
+
+  app.post('/auth/register', async (req, reply) => {
+    const { email, password } = req.body || {};
+    if (!email || !password || password.length < 8) {
+      return reply.code(400).send({ error: 'email_and_password_min_8_required' });
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    if (await findUserByEmail(normalizedEmail)) return reply.code(409).send({ error: 'email_exists' });
+
+    const user = {
+      id: crypto.randomUUID(),
+      email: normalizedEmail,
+      password_hash: await bcrypt.hash(password, 10)
+    };
+    await q('insert into users(id, email, password_hash) values($1, $2, $3)', [
+      user.id,
+      user.email,
+      user.password_hash
+    ]);
+    return { ...(await issueTokens(user.id)), user: publicUser(user) };
   });
 
-  app.post('/auth/login', async(req, reply)=>{
-    const {email,password}=req.body||{}; const user=await findUserByEmail(email||'');
-    if(!user || !await bcrypt.compare(password||'', user.password_hash)) return reply.code(401).send({error:'invalid_credentials'});
-    return {...await issue(user.id), user:publicUser(user)};
+  app.post('/auth/login', async (req, reply) => {
+    const { email, password } = req.body || {};
+    const user = await findUserByEmail(email || '');
+    if (!user || !(await bcrypt.compare(password || '', user.password_hash))) {
+      return reply.code(401).send({ error: 'invalid_credentials' });
+    }
+    return { ...(await issueTokens(user.id)), user: publicUser(user) };
   });
 
-  app.post('/auth/refresh', async(req, reply)=>{
-    const {refreshToken}=req.body||{}; let row;
-    if(isMemory()) row=getMem().refreshTokens.find(t=>t.token===refreshToken && t.expires_at>new Date());
-    else row=(await q('select * from refresh_tokens where token=$1 and expires_at>now()',[refreshToken])).rows[0];
-    if(!row) return reply.code(401).send({error:'invalid_refresh'});
-    return await issue(row.user_id);
+  app.post('/auth/refresh', async (req, reply) => {
+    const { refreshToken } = req.body || {};
+    const row = (await q(
+      'select * from refresh_tokens where token=$1 and expires_at > now()',
+      [refreshToken]
+    )).rows[0];
+    if (!row) return reply.code(401).send({ error: 'invalid_refresh' });
+    return issueTokens(row.user_id);
   });
 
-  app.get('/devices',{preHandler:authPreHandler()}, async(req)=>{
-    if(isMemory()) return {devices:getMem().devices.filter(d=>d.user_id===req.userId)};
-    return {devices:(await q('select id,name,platform,public_key,last_seen_at,trusted,created_at from devices where user_id=$1 order by created_at desc',[req.userId])).rows};
+  app.post('/auth/privacy/verify', { preHandler: authPreHandler() }, async (req, reply) => {
+    const { password } = req.body || {};
+    const user = (await q('select * from users where id=$1', [req.userId])).rows[0];
+    if (!user || !(await bcrypt.compare(password || '', user.password_hash))) {
+      return reply.code(401).send({ error: 'invalid_credentials' });
+    }
+    return { privacyToken: signPrivacy(req.userId) };
   });
 
-  app.post('/devices/register',{preHandler:authPreHandler()}, async(req, reply)=>{
-    const {name,platform,publicKey}=req.body||{}; if(!name||!platform||!publicKey) return reply.code(400).send({error:'missing_fields'});
-    const device={id:randomUUID(),user_id:req.userId,name,platform,public_key:publicKey,last_seen_at:new Date(),trusted:true,created_at:new Date()};
-    if(isMemory()) getMem().devices.push(device); else await q('insert into devices(id,user_id,name,platform,public_key,last_seen_at,trusted) values($1,$2,$3,$4,$5,$6,true)',[device.id,device.user_id,name,platform,publicKey,device.last_seen_at]);
-    return {device};
+  app.get('/items', { preHandler: authPreHandler() }, async (req, reply) => {
+    const includePrivate = req.query.includePrivate === 'true';
+    if (includePrivate && !requirePrivacy(req, reply)) return reply;
+    const rows = (await q(
+      `select *
+         from sent_items
+        where user_id = $1 and ($2::boolean = true or is_private = false)
+        order by created_at desc
+        limit 200`,
+      [req.userId, includePrivate]
+    )).rows;
+    return { items: rows.map(publicItem) };
   });
 
-  app.delete('/devices/:id',{preHandler:authPreHandler()}, async(req)=>{
-    if(isMemory()) getMem().devices=getMem().devices.filter(d=>!(d.user_id===req.userId&&d.id===req.params.id));
-    else await q('delete from devices where user_id=$1 and id=$2',[req.userId,req.params.id]);
-    return {ok:true};
+  app.post('/items/text', { preHandler: authPreHandler() }, async (req, reply) => {
+    const { text, isPrivate = false } = req.body || {};
+    if (!text || typeof text !== 'string') return reply.code(400).send({ error: 'text_required' });
+    const id = crypto.randomUUID();
+    const row = (await q(
+      `insert into sent_items(id, user_id, type, text_content, is_private)
+       values($1, $2, 'text', $3, $4)
+       returning *`,
+      [id, req.userId, text, Boolean(isPrivate)]
+    )).rows[0];
+    broadcastUserChanged(req.userId);
+    return { item: publicItem(row) };
   });
 
-  app.post('/devices/pair/start',{preHandler:authPreHandler()}, async(req, reply)=>{
-    const {deviceName,platform,publicKey}=req.body||{}; if(!deviceName||!platform||!publicKey) return reply.code(400).send({error:'missing_fields'});
-    const code=String(Math.floor(100000+Math.random()*900000)); const expiresAt=new Date(Date.now()+10*60000);
-    const row={code,user_id:req.userId,device_name:deviceName,platform,public_key:publicKey,expires_at:expiresAt};
-    if(isMemory()) getMem().pairingRequests.push(row); else await q('insert into pairing_requests(code,user_id,device_name,platform,public_key,expires_at) values($1,$2,$3,$4,$5,$6)',[code,req.userId,deviceName,platform,publicKey,expiresAt]);
-    broadcastToUser(req.userId,{type:'pairing.request',id:randomUUID(),createdAt:nowIso(),payload:{pairingCode:code,deviceName,platform,publicKey}});
-    return {pairingCode:code,expiresAt};
+  app.post('/items/file', { preHandler: authPreHandler() }, async (req, reply) => {
+    const parts = req.parts();
+    let isPrivate = false;
+    let uploaded;
+
+    for await (const part of parts) {
+      if (part.type === 'field' && part.fieldname === 'isPrivate') {
+        isPrivate = part.value === 'true';
+      }
+      if (part.type === 'file' && part.fieldname === 'file') {
+        const fileId = crypto.randomUUID();
+        const originalName = sanitizeFileName(part.filename);
+        const userDir = path.join(uploadDir, req.userId);
+        const storagePath = path.join(userDir, `${fileId}-${originalName}`);
+        await mkdir(userDir, { recursive: true });
+        const size = await saveUploadStream(part.file, storagePath);
+        uploaded = {
+          id: fileId,
+          originalName,
+          mimeType: part.mimetype || 'application/octet-stream',
+          size,
+          storagePath
+        };
+      }
+    }
+
+    if (!uploaded) return reply.code(400).send({ error: 'file_required' });
+    const itemId = crypto.randomUUID();
+    await q(
+      `insert into files(id, user_id, original_name, mime_type, size, storage_path)
+       values($1, $2, $3, $4, $5, $6)`,
+      [uploaded.id, req.userId, uploaded.originalName, uploaded.mimeType, uploaded.size, uploaded.storagePath]
+    );
+    const row = (await q(
+      `insert into sent_items(id, user_id, type, file_id, file_name, mime_type, size, is_private)
+       values($1, $2, 'file', $3, $4, $5, $6, $7)
+       returning *`,
+      [itemId, req.userId, uploaded.id, uploaded.originalName, uploaded.mimeType, uploaded.size, isPrivate]
+    )).rows[0];
+    broadcastUserChanged(req.userId);
+    return { item: publicItem(row) };
   });
 
-  app.post('/devices/pair/confirm',{preHandler:authPreHandler()}, async(req, reply)=>{
-    const {pairingCode,encryptedKeyEnvelope}=req.body||{}; if(!pairingCode||!encryptedKeyEnvelope) return reply.code(400).send({error:'missing_fields'});
-    let pr; if(isMemory()) pr=getMem().pairingRequests.find(p=>p.code===pairingCode&&p.user_id===req.userId&&p.expires_at>new Date());
-    else pr=(await q('select * from pairing_requests where code=$1 and user_id=$2 and expires_at>now()',[pairingCode,req.userId])).rows[0];
-    if(!pr) return reply.code(404).send({error:'pairing_not_found'});
-    const device={id:randomUUID(),user_id:req.userId,name:pr.device_name,platform:pr.platform,public_key:pr.public_key,last_seen_at:new Date(),trusted:true,created_at:new Date()};
-    if(isMemory()){ getMem().devices.push(device); getMem().pairingRequests=getMem().pairingRequests.filter(p=>p.code!==pairingCode); }
-    else { await q('insert into devices(id,user_id,name,platform,public_key,last_seen_at,trusted) values($1,$2,$3,$4,$5,$6,true)',[device.id,device.user_id,device.name,device.platform,device.public_key,device.last_seen_at]); await q('delete from pairing_requests where code=$1',[pairingCode]); }
-    broadcastToUser(req.userId,{type:'pairing.confirmed',id:randomUUID(),createdAt:nowIso(),payload:{device,encryptedKeyEnvelope}});
-    return {ok:true,device};
+  async function sendFile(req, reply, disposition) {
+    const row = await itemForFile(req.params.id, req.userId);
+    if (!row) return reply.code(404).send({ error: 'file_not_found' });
+    if (row.is_private && !requirePrivacy(req, reply)) return reply;
+    if (!fs.existsSync(row.storage_path)) return reply.code(404).send({ error: 'file_missing' });
+    return reply
+      .header('content-type', row.mime_type || 'application/octet-stream')
+      .header('content-length', row.size)
+      .header('content-disposition', `${disposition}; filename="${encodeURIComponent(row.file_name)}"`)
+      .send(fs.createReadStream(row.storage_path));
+  }
+
+  app.get('/files/:id/download', { preHandler: authPreHandler() }, async (req, reply) => {
+    return sendFile(req, reply, 'attachment');
   });
 
-  app.post('/events/clipboard',{preHandler:authPreHandler()}, async(req, reply)=>{
-    const {deviceId,targetDeviceIds,ciphertext,nonce,contentHash}=req.body||{}; if(!deviceId||!ciphertext||!nonce) return reply.code(400).send({error:'missing_fields'});
-    if(!await findDevice(req.userId,deviceId)) return reply.code(403).send({error:'unknown_device'});
-    const eventId=randomUUID(); const event={type:'clipboard.update',id:eventId,createdAt:nowIso(),senderDeviceId:deviceId,targetDeviceIds:targetDeviceIds||[],payload:{ciphertext,nonce,contentHash}};
-    if(isMemory()) getMem().clipboardEvents.push({id:eventId,user_id:req.userId,sender_device_id:deviceId,target_device_ids:targetDeviceIds,ciphertext,nonce,content_hash:contentHash,created_at:new Date()});
-    else await q('insert into clipboard_events(id,user_id,sender_device_id,target_device_ids,ciphertext,nonce,content_hash) values($1,$2,$3,$4,$5,$6,$7)',[eventId,req.userId,deviceId,JSON.stringify(targetDeviceIds||[]),ciphertext,nonce,contentHash]);
-    targetDeviceIds?.length ? sendToDevices(targetDeviceIds,event) : broadcastToUser(req.userId,event,deviceId);
-    return {eventId};
+  app.get('/files/:id/preview', { preHandler: authPreHandler() }, async (req, reply) => {
+    return sendFile(req, reply, 'inline');
   });
 
-  app.post('/files/upload/init',{preHandler:authPreHandler()}, async(req, reply)=>{
-    const {deviceId,targetDeviceIds,encryptedMetadata,size,chunkSize}=req.body||{};
-    if(!deviceId||!Array.isArray(targetDeviceIds)||!encryptedMetadata||!size) return reply.code(400).send({error:'missing_fields'});
-    if(size>maxFileBytes) return reply.code(413).send({error:'file_too_large'});
-    const uploadId=randomUUID(), id=randomUUID(), exp=expires();
-    const row={id,upload_id:uploadId,user_id:req.userId,sender_device_id:deviceId,target_device_ids:targetDeviceIds,encrypted_metadata:encryptedMetadata,size,chunk_size:chunkSize||1048576,status:'uploading',expires_at:exp,created_at:new Date()};
-    if(isMemory()) getMem().fileTransfers.push(row); else await q('insert into file_transfers(id,upload_id,user_id,sender_device_id,target_device_ids,encrypted_metadata,size,chunk_size,status,expires_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[id,uploadId,req.userId,deviceId,JSON.stringify(targetDeviceIds),encryptedMetadata,size,row.chunk_size,'uploading',exp]);
-    await mkdir(path.join(uploadDir,uploadId),{recursive:true}); return {uploadId};
+  app.get('/events', (req, reply) => {
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const token = url.searchParams.get('token');
+      const payload = verifyAccess(token);
+      reply.raw.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no'
+      });
+      addEventClient(payload.sub, reply.raw);
+    } catch {
+      reply.code(401).send({ error: 'invalid_token' });
+    }
   });
 
-  app.put('/files/upload/:uploadId/chunk',{preHandler:authPreHandler()}, async(req, reply)=>{
-    const index=Number(req.query.index||0); if(!Number.isInteger(index)||index<0) return reply.code(400).send({error:'bad_index'});
-    const buf=await req.body; await mkdir(path.join(uploadDir,req.params.uploadId),{recursive:true}); await writeFile(path.join(uploadDir,req.params.uploadId,`${index}.bin`),buf);
-    return {ok:true};
+  app.delete('/test/files', { preHandler: authPreHandler() }, async (req) => {
+    if (process.env.NODE_ENV !== 'test') return { ok: false };
+    await rm(path.join(uploadDir, req.userId), { recursive: true, force: true });
+    return { ok: true };
   });
 
-  app.post('/files/upload/:uploadId/complete',{preHandler:authPreHandler()}, async(req, reply)=>{
-    let ft; if(isMemory()) ft=getMem().fileTransfers.find(f=>f.upload_id===req.params.uploadId&&f.user_id===req.userId); else ft=(await q('select * from file_transfers where upload_id=$1 and user_id=$2',[req.params.uploadId,req.userId])).rows[0];
-    if(!ft) return reply.code(404).send({error:'upload_not_found'});
-    if(isMemory()) ft.status='ready'; else await q('update file_transfers set status=$1 where upload_id=$2',['ready',req.params.uploadId]);
-    const event={type:'file.offer',id:ft.id,createdAt:nowIso(),senderDeviceId:ft.sender_device_id,targetDeviceIds:ft.target_device_ids,payload:{fileId:ft.id,encryptedMetadata:ft.encrypted_metadata,size:Number(ft.size),expiresAt:ft.expires_at}};
-    sendToDevices(ft.target_device_ids,event); return {fileId:ft.id};
-  });
+  const webDist = path.resolve(process.env.WEB_DIST_DIR || path.join(__dirname, '..', '..', 'web', 'dist'));
+  if (fs.existsSync(webDist)) {
+    await app.register(staticFiles, { root: webDist, prefix: '/' });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.raw.url?.startsWith('/api') || req.raw.url?.startsWith('/auth') || req.raw.url?.startsWith('/items') || req.raw.url?.startsWith('/files')) {
+        return reply.code(404).send({ error: 'not_found' });
+      }
+      return reply.sendFile('index.html');
+    });
+  }
 
-  app.get('/files/:fileId/download',{preHandler:authPreHandler()}, async(req, reply)=>{
-    let ft; if(isMemory()) ft=getMem().fileTransfers.find(f=>f.id===req.params.fileId&&f.user_id===req.userId); else ft=(await q('select * from file_transfers where id=$1 and user_id=$2',[req.params.fileId,req.userId])).rows[0];
-    if(!ft) return reply.code(404).send({error:'file_not_found'});
-    const dir=path.join(uploadDir,ft.upload_id); const chunks=[]; for(let i=0;;i++){ try{ chunks.push(await readFile(path.join(dir,`${i}.bin`))); }catch{ break; } }
-    return reply.header('content-type','application/octet-stream').send(Buffer.concat(chunks));
-  });
-
-  app.delete('/maintenance/expired-files',{preHandler:authPreHandler()}, async(req)=>{
-    const expired=isMemory()?getMem().fileTransfers.filter(f=>f.expires_at<new Date()):(await q('select * from file_transfers where expires_at<now()')).rows;
-    for(const f of expired) await rm(path.join(uploadDir,f.upload_id),{recursive:true,force:true});
-    if(isMemory()) getMem().fileTransfers=getMem().fileTransfers.filter(f=>f.expires_at>=new Date()); else await q('delete from file_transfers where expires_at<now()');
-    return {ok:true,deleted:expired.length};
-  });
-
-  app.get('/ws',{websocket:true}, (conn, req)=>{
-    try{
-      const url=new URL(req.url,'http://localhost'); const token=url.searchParams.get('token'); const deviceId=url.searchParams.get('deviceId');
-      const userId=verifyAccess(token).sub; conn.socket.deviceId=deviceId; addSocket(userId,deviceId,conn.socket);
-      broadcastToUser(userId,{type:'device.online',id:randomUUID(),createdAt:nowIso(),senderDeviceId:deviceId,payload:{deviceId}},deviceId);
-      conn.socket.on('close',()=>broadcastToUser(userId,{type:'device.offline',id:randomUUID(),createdAt:nowIso(),senderDeviceId:deviceId,payload:{deviceId}},deviceId));
-    } catch { conn.socket.close(1008,'unauthorized'); }
-  });
   return app;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  const app=await buildApp();
-  app.listen({port:Number(process.env.PORT||8787),host:'0.0.0.0'}).catch(err=>{app.log.error(err);process.exit(1);});
+  const app = await buildApp();
+  app.listen({ port: Number(process.env.PORT || 8787), host: '0.0.0.0' }).catch((err) => {
+    app.log.error(err);
+    process.exit(1);
+  });
 }

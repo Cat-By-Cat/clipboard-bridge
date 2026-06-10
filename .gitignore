@@ -3,15 +3,8 @@ dist/
 build/
 .env
 .env.local
-server/data/
 server/uploads/
 server/uploads-test/
-**/.gradle/
-**/target/
-android/app/build/
-desktop/src-tauri/target/
-.DS_Store
 server-local*.log
-desktop-windows-*.log
-uploads-local/
-uploads-entry-test/
+npm-debug.log*
+.DS_Store
