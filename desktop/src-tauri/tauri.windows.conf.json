@@ -1,5 +1,12 @@
 {
   "bundle": {
-    "targets": ["msi"]
+    "targets": [
+      "msi"
+    ],
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    }
   }
 }
