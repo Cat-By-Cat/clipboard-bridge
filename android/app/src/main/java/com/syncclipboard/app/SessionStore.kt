@@ -18,6 +18,10 @@ class SessionStore(context: Context) {
         val accessToken = prefs.getString("accessToken", null) ?: return null
         val deviceId = prefs.getString("deviceId", null) ?: return null
         val syncKey = prefs.getString("syncKey", null) ?: return null
+        if (!Regex("^[0-9a-fA-F]{64}$").matches(syncKey)) {
+            clear()
+            return null
+        }
         return Session(serverUrl, accessToken, deviceId, syncKey)
     }
 

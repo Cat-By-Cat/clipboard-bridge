@@ -11,3 +11,7 @@ server/uploads-test/
 android/app/build/
 desktop/src-tauri/target/
 .DS_Store
+server-local*.log
+desktop-windows-*.log
+uploads-local/
+uploads-entry-test/

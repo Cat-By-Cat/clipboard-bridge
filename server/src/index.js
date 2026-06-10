@@ -7,6 +7,7 @@ import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { initDb, isMemory, getMem, q } from './db.js';
 import { signAccess, verifyAccess, newRefreshToken } from './tokens.js';
 import { addSocket, broadcastToUser, sendToDevices } from './events.js';
@@ -170,7 +171,7 @@ export async function buildApp() {
   return app;
 }
 
-if (import.meta.url === `file://${process.argv[1].replaceAll('\\','/')}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const app=await buildApp();
   app.listen({port:Number(process.env.PORT||8787),host:'0.0.0.0'}).catch(err=>{app.log.error(err);process.exit(1);});
 }

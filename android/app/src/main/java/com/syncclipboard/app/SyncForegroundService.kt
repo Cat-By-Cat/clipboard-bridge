@@ -90,7 +90,7 @@ class SyncForegroundService : Service() {
         scope.launch {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             while (true) {
-                delay(1200)
+                delay(CLIPBOARD_POLL_INTERVAL_MS)
                 if (suppressNext) {
                     suppressNext = false
                     continue
@@ -115,5 +115,6 @@ class SyncForegroundService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "sync_clipboard_background"
+        private const val CLIPBOARD_POLL_INTERVAL_MS = 5000L
     }
 }

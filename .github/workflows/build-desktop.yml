@@ -39,9 +39,11 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Setup Rust
+        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Tauri bundler tools
+        if: runner.os == 'Windows'
         uses: actions/cache@v4
         with:
           path: desktop/src-tauri/target/.tauri
@@ -93,8 +95,13 @@ jobs:
           npm exec --workspace desktop -- tsc --version
           npm exec --workspace desktop -- vite --version
 
-      - name: Build desktop installer
+      - name: Build Windows Tauri MSI
+        if: runner.os == 'Windows'
         run: npm --workspace desktop run tauri -- build --bundles ${{ matrix.bundle-target }} --ci
+
+      - name: Build macOS Electron DMG
+        if: runner.os == 'macOS'
+        run: npm --workspace desktop run electron:build:mac
 
       - name: Collect release assets
         shell: bash
@@ -112,7 +119,12 @@ jobs:
               cp "$file" "$release_assets/"
             done
 
-          find desktop/src-tauri/target/release/bundle -type f -name '*.dmg' -print |
+          find desktop/src-tauri/target/release/bundle -type f -name '*.dmg' -print 2>/dev/null |
+            while IFS= read -r file; do
+              cp "$file" "$release_assets/"
+            done
+
+          find desktop/dist-electron -type f -name '*.dmg' -print 2>/dev/null |
             while IFS= read -r file; do
               cp "$file" "$release_assets/"
             done
@@ -120,7 +132,7 @@ jobs:
           while IFS= read -r app; do
             name="$(basename "$app" .app)"
             (cd "$(dirname "$app")" && zip -qry "$release_assets/$name.app.zip" "$(basename "$app")")
-          done < <(find desktop/src-tauri/target/release/bundle -type d -name '*.app')
+          done < <(find desktop/src-tauri/target/release/bundle -type d -name '*.app' 2>/dev/null)
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
@@ -131,6 +143,7 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*.exe
             desktop/src-tauri/target/release/bundle/**/*.dmg
             desktop/src-tauri/target/release/bundle/**/*.app
+            desktop/dist-electron/**/*.dmg
           if-no-files-found: warn
 
       - name: Upload desktop bundles to GitHub Release
