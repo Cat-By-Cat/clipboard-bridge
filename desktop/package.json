@@ -9,7 +9,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri": "npx --yes @tauri-apps/cli@2.11.2",
-    "electron:build:mac": "npm run build && npm run electron:prepare:mac-arm64 && electron-builder --mac dmg --publish never --config npmRebuild=false",
+    "electron:build:mac": "npm run build && npm run electron:prepare:mac-arm64 && electron-builder --mac dmg --publish never",
     "electron:prepare:mac-arm64": "node electron/prepare-mac-arm64.cjs"
   },
   "dependencies": {
