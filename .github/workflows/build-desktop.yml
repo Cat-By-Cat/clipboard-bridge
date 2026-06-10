@@ -105,8 +105,11 @@ jobs:
         run: |
           if [ "$(uname -m)" = "arm64" ]; then
             brew install p7zip
+            seven_zip="$(command -v 7zz || command -v 7z)"
+            test -x "$seven_zip"
             mkdir -p node_modules/7zip-bin/mac/arm64
-            ln -sf /opt/homebrew/bin/7zz node_modules/7zip-bin/mac/arm64/7za
+            ln -sf "$seven_zip" node_modules/7zip-bin/mac/arm64/7za
+            node_modules/7zip-bin/mac/arm64/7za --help >/dev/null
           fi
 
       - name: Build macOS Electron DMG
