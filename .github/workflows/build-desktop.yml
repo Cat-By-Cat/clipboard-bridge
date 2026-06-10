@@ -21,7 +21,7 @@ jobs:
           - platform: windows-latest
             artifact-name: sync-clipboard-windows
             bundle-target: msi
-          - platform: macos-latest
+          - platform: macos-13
             artifact-name: sync-clipboard-macos
             bundle-target: dmg
 
