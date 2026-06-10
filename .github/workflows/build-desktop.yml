@@ -109,30 +109,24 @@ jobs:
           release_assets="$(pwd)/release-assets"
           mkdir -p "$release_assets"
 
-          find desktop/src-tauri/target/release/bundle -type f -name '*.msi' -print |
-            while IFS= read -r file; do
-              cp "$file" "$release_assets/"
-            done
+          if [ -d desktop/src-tauri/target/release/bundle ]; then
+            find desktop/src-tauri/target/release/bundle -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \) -print |
+              while IFS= read -r file; do
+                cp "$file" "$release_assets/"
+              done
 
-          find desktop/src-tauri/target/release/bundle -type f -name '*.exe' -print |
-            while IFS= read -r file; do
-              cp "$file" "$release_assets/"
-            done
+            while IFS= read -r app; do
+              name="$(basename "$app" .app)"
+              (cd "$(dirname "$app")" && zip -qry "$release_assets/$name.app.zip" "$(basename "$app")")
+            done < <(find desktop/src-tauri/target/release/bundle -type d -name '*.app')
+          fi
 
-          find desktop/src-tauri/target/release/bundle -type f -name '*.dmg' -print 2>/dev/null |
-            while IFS= read -r file; do
-              cp "$file" "$release_assets/"
-            done
-
-          find desktop/dist-electron -type f -name '*.dmg' -print 2>/dev/null |
-            while IFS= read -r file; do
-              cp "$file" "$release_assets/"
-            done
-
-          while IFS= read -r app; do
-            name="$(basename "$app" .app)"
-            (cd "$(dirname "$app")" && zip -qry "$release_assets/$name.app.zip" "$(basename "$app")")
-          done < <(find desktop/src-tauri/target/release/bundle -type d -name '*.app' 2>/dev/null)
+          if [ -d desktop/dist-electron ]; then
+            find desktop/dist-electron -type f -name '*.dmg' -print |
+              while IFS= read -r file; do
+                cp "$file" "$release_assets/"
+              done
+          fi
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
