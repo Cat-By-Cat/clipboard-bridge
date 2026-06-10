@@ -23,15 +23,20 @@ if (!sevenZip) {
   process.exit(1);
 }
 
-const target = path.resolve(__dirname, '..', '..', 'node_modules', '7zip-bin', 'mac', 'arm64', '7za');
-fs.mkdirSync(path.dirname(target), { recursive: true });
-try { fs.rmSync(target, { force: true }); } catch {}
-fs.symlinkSync(sevenZip, target);
-fs.chmodSync(target, 0o755);
+const targets = [
+  path.resolve(__dirname, '..', '..', 'node_modules', '7zip-bin', 'mac', 'arm64', '7za'),
+  path.resolve(__dirname, '..', 'node_modules', '7zip-bin', 'mac', 'arm64', '7za'),
+];
 
-const verify = spawnSync(target, ['--help'], { stdio: 'ignore' });
-if (verify.status !== 0) {
-  console.error('Prepared 7za at ' + target + ', but it did not execute.');
-  process.exit(verify.status ?? 1);
+for (const target of targets) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  try { fs.rmSync(target, { force: true }); } catch {}
+  fs.symlinkSync(sevenZip, target);
+  fs.chmodSync(target, 0o755);
+  const verify = spawnSync(target, ['--help'], { stdio: 'ignore' });
+  if (verify.status !== 0) {
+    console.error('Prepared 7za at ' + target + ', but it did not execute.');
+    process.exit(verify.status ?? 1);
+  }
+  console.log('Prepared Electron Builder 7za shim: ' + target + ' -> ' + sevenZip);
 }
-console.log('Prepared Electron Builder 7za shim: ' + target + ' -> ' + sevenZip);
