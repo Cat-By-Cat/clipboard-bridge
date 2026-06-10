@@ -21,7 +21,7 @@ jobs:
           - platform: windows-latest
             artifact-name: sync-clipboard-windows
             bundle-target: msi
-          - platform: macos-13
+          - platform: macos-latest
             artifact-name: sync-clipboard-macos
             bundle-target: dmg
 
@@ -98,6 +98,16 @@ jobs:
       - name: Build Windows Tauri MSI
         if: runner.os == 'Windows'
         run: npm --workspace desktop run tauri -- build --bundles ${{ matrix.bundle-target }} --ci
+
+      - name: Prepare macOS Electron tools
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [ "$(uname -m)" = "arm64" ]; then
+            brew install p7zip
+            mkdir -p node_modules/7zip-bin/mac/arm64
+            ln -sf /opt/homebrew/bin/7zz node_modules/7zip-bin/mac/arm64/7za
+          fi
 
       - name: Build macOS Electron DMG
         if: runner.os == 'macOS'
