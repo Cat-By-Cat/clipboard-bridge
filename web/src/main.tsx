@@ -1,4 +1,4 @@
-﻿import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Copy,
@@ -123,12 +123,82 @@ function App() {
 
   useEffect(() => {
     if (!auth || !eventsUrl) return;
-    const source = new EventSource(eventsUrl);
-    source.addEventListener('items.changed', () => {
+
+    let source: EventSource | null = null;
+    let reconnectTimer = 0;
+    let staleTimer = 0;
+    let closed = false;
+    let retryMs = 1000;
+    let lastEventAt = Date.now();
+
+    const reconnect = (immediate = false) => {
+      if (closed || reconnectTimer) return;
+      if (!immediate) setStatus('实时连接断开，正在重连');
+      const delay = immediate ? 0 : retryMs;
+      retryMs = Math.min(Math.round(retryMs * 1.6), 10000);
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = 0;
+        connect();
+      }, delay);
+    };
+
+    const markAlive = () => {
+      lastEventAt = Date.now();
+      retryMs = 1000;
+    };
+
+    const connect = () => {
+      if (closed) return;
+      source?.close();
+      source = new EventSource(eventsUrl + '&_=' + Date.now());
+      lastEventAt = Date.now();
+
+      source.addEventListener('connected', () => {
+        markAlive();
+        loadItems().catch((err) => setStatus(err.message));
+      });
+      source.addEventListener('heartbeat', markAlive);
+      source.addEventListener('items.changed', () => {
+        markAlive();
+        loadItems().catch((err) => setStatus(err.message));
+      });
+      source.onerror = () => {
+        if (closed) return;
+        source?.close();
+        reconnect();
+      };
+    };
+
+    const wakeReconnect = () => {
+      if (closed) return;
       loadItems().catch((err) => setStatus(err.message));
-    });
-    source.onerror = () => setStatus('实时连接断开，浏览器会自动重连');
-    return () => source.close();
+      source?.close();
+      reconnect(true);
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') wakeReconnect();
+    };
+
+    connect();
+    staleTimer = window.setInterval(() => {
+      if (Date.now() - lastEventAt > 45000) wakeReconnect();
+    }, 15000);
+    window.addEventListener('online', wakeReconnect);
+    window.addEventListener('focus', wakeReconnect);
+    window.addEventListener('pageshow', wakeReconnect);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      closed = true;
+      window.clearTimeout(reconnectTimer);
+      window.clearInterval(staleTimer);
+      window.removeEventListener('online', wakeReconnect);
+      window.removeEventListener('focus', wakeReconnect);
+      window.removeEventListener('pageshow', wakeReconnect);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      source?.close();
+    };
   }, [auth, eventsUrl, loadItems]);
 
   useEffect(() => {

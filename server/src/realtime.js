@@ -10,11 +10,12 @@ export function addEventClient(userId, res) {
   clients.add(res);
   clientsByUser.set(userId, clients);
 
+  res.write('retry: 3000\n');
   writeEvent(res, 'connected', { type: 'connected', createdAt: new Date().toISOString() });
 
   const heartbeat = setInterval(() => {
     if (res.destroyed) return;
-    res.write(`: heartbeat ${Date.now()}\n\n`);
+    writeEvent(res, 'heartbeat', { type: 'heartbeat', createdAt: new Date().toISOString() });
   }, 25000);
 
   res.on('close', () => {
