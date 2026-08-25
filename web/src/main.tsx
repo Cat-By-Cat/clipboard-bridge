@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-type User = { id: string; email: string };
+type User = { id: string; email: string; hasPassword?: boolean };
 type AuthState = { accessToken: string; refreshToken: string; user: User };
 type SentItem = {
   id: string;
@@ -63,6 +63,10 @@ function App() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+  const [ssoName, setSsoName] = useState('飞牛账号');
+  const [localLoginEnabled, setLocalLoginEnabled] = useState(true);
+  const [ssoError, setSsoError] = useState('');
   const [items, setItems] = useState<SentItem[]>([]);
   const [text, setText] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -116,6 +120,37 @@ function App() {
     const data = await request<{ items: SentItem[] }>(`/items${query}`);
     setItems(data.items);
   }, [auth, privacyEnabled, request]);
+
+  // 探测 SSO 配置；回调落地后消费 sso_auth cookie
+  useEffect(() => {
+    fetch('/auth/sso/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.sso?.enabled) {
+          setSsoEnabled(true);
+          if (data.sso.name) setSsoName(data.sso.name);
+        }
+        if (typeof data?.localLoginEnabled === 'boolean') {
+          setLocalLoginEnabled(data.localLoginEnabled);
+        }
+      })
+      .catch(() => {});
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('sso')) {
+      const cookie = document.cookie.split('; ').find((c) => c.startsWith('sso_auth='));
+      if (cookie) {
+        try {
+          const next = JSON.parse(decodeURIComponent(cookie.slice('sso_auth='.length)));
+          localStorage.setItem(savedAuthKey, JSON.stringify(next));
+          setAuth(next);
+        } catch { /* 无效会话忽略 */ }
+      }
+      document.cookie = 'sso_auth=; max-age=0; path=/';
+      if (params.get('sso') === 'denied') setSsoError('已取消单点登录');
+      if (params.get('sso') === 'error') setSsoError('单点登录失败，请重试');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   useEffect(() => {
     loadItems().catch((err) => setStatus(err.message));
@@ -313,6 +348,16 @@ function App() {
     setBusy(true);
     setStatus('');
     try {
+      if (!auth) throw new Error('未登录');
+      if (!auth.user.hasPassword) {
+        // 纯 SSO 账号：先设置隐私密码
+        const setRes = await fetch('/auth/privacy/set-password', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${auth.accessToken}` },
+          body: JSON.stringify({ password: privacyPassword })
+        });
+        if (!setRes.ok) throw new Error((await setRes.json()).error || '设置失败');
+      }
       const data = await request<{ privacyToken: string }>('/auth/privacy/verify', {
         method: 'POST',
         body: JSON.stringify({ password: privacyPassword })
@@ -394,24 +439,39 @@ function App() {
             <h1>多端发送箱</h1>
             <p className="muted">登录同一个账号，在多个网页端实时查看发送记录。</p>
           </div>
-          <form onSubmit={submitAuth} className="form-stack">
-            <label>
-              邮箱
-              <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
-            </label>
-            <label>
-              密码
-              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={8} required />
-            </label>
-            <button className="primary" disabled={busy}>
-              <ShieldCheck size={18} />
-              {mode === 'login' ? '登录' : '注册'}
+          {localLoginEnabled ? (
+            <form onSubmit={submitAuth} className="form-stack">
+              <label>
+                邮箱
+                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+              </label>
+              <label>
+                密码
+                <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={8} required />
+              </label>
+              <button className="primary" disabled={busy}>
+                <ShieldCheck size={18} />
+                {mode === 'login' ? '登录' : '注册'}
+              </button>
+            </form>
+          ) : (
+            <p className="muted">请使用飞牛账号登录。</p>
+          )}
+          {ssoEnabled && (
+            <button
+              type="button"
+              className={localLoginEnabled ? 'ghost' : 'primary full'}
+              onClick={() => (window.location.href = '/auth/sso/start')}
+            >
+              使用{ssoName}登录
             </button>
-          </form>
-          <button className="text-button" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
-            {mode === 'login' ? '没有账号？注册' : '已有账号？登录'}
-          </button>
-          {status && <p className="status">{status}</p>}
+          )}
+          {localLoginEnabled && (
+            <button className="text-button" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
+              {mode === 'login' ? '没有账号？注册' : '已有账号？登录'}
+            </button>
+          )}
+          {(status || ssoError) && <p className="status">{ssoError || status}</p>}
         </section>
       </main>
     );
@@ -529,7 +589,7 @@ function App() {
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <form className="modal" onSubmit={verifyPrivacy}>
             <h2>开启隐私模式</h2>
-            <p className="muted">请输入当前账号密码。验证成功后，本页面会显示隐私发送记录。</p>
+            <p className="muted">{auth.user.hasPassword ? '请输入当前账号密码。验证成功后，本页面会显示隐私发送记录。' : '您是通过单点登录的账号，请设置一个隐私密码（仅用于本次查看隐私内容）。'}</p>
             <input value={privacyPassword} onChange={(event) => setPrivacyPassword(event.target.value)} type="password" autoFocus />
             <div className="modal-actions">
               <button type="button" className="ghost" onClick={() => setShowPrivacyDialog(false)}>取消</button>

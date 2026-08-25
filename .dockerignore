@@ -1,0 +1,11 @@
+.git
+.github
+.reasonix
+node_modules
+**/node_modules
+server/uploads
+**/uploads
+server/.env
+*.log
+web/dist
+.DS_Store

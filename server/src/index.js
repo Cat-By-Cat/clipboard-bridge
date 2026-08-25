@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import staticFiles from '@fastify/static';
 import bcrypt from 'bcryptjs';
@@ -13,13 +14,19 @@ import { fileURLToPath } from 'node:url';
 import { initDb, q } from './db.js';
 import { newRefreshToken, signAccess, signPrivacy, verifyAccess, verifyPrivacy } from './tokens.js';
 import { addEventClient, broadcastUserChanged } from './realtime.js';
+import { buildAuthorizeUrl, exchangeCode, hashPrivacyPassword, ssoConfig, verifyPrivacyPassword } from './sso.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, '..', 'uploads'));
 const maxFileBytes = Number(process.env.MAX_FILE_BYTES || 1073741824);
 
 function publicUser(row) {
-  return { id: row.id, email: row.email, createdAt: row.created_at };
+  return { id: row.id, email: row.email, createdAt: row.created_at, hasPassword: hasLocalPassword(row) };
+}
+
+/** 用户是否缺少本地登录密码（纯 SSO 账号） */
+function hasLocalPassword(user) {
+  return Boolean(user.password_hash);
 }
 
 function publicItem(row) {
@@ -121,6 +128,7 @@ export async function buildApp() {
     origin: process.env.CORS_ORIGIN || true,
     credentials: true
   });
+  await app.register(cookie);
   await app.register(multipart, { limits: { fileSize: maxFileBytes } });
 
   app.get('/health', async () => ({ ok: true, service: 'sentbox-web', time: new Date().toISOString() }));
@@ -149,7 +157,8 @@ export async function buildApp() {
   app.post('/auth/login', async (req, reply) => {
     const { email, password } = req.body || {};
     const user = await findUserByEmail(email || '');
-    if (!user || !(await bcrypt.compare(password || '', user.password_hash))) {
+    // 纯 SSO 账号没有本地密码，禁止走密码登录
+    if (!user || !hasLocalPassword(user) || !(await bcrypt.compare(password || '', user.password_hash))) {
       return reply.code(401).send({ error: 'invalid_credentials' });
     }
     return { ...(await issueTokens(user.id)), user: publicUser(user) };
@@ -165,13 +174,123 @@ export async function buildApp() {
     return issueTokens(row.user_id);
   });
 
+  // ---------- 飞牛单点登录（fn-sso OIDC/OAuth2） ----------
+  const ssoCookieOpts = {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: false,
+    path: '/'
+  };
+
+  // 前端获取 SSO 是否可用及入口配置
+  // 登录方式探测：sso 配置 + 本地登录是否开启
+  // 默认只开放 SSO；LOCAL_AUTH_ENABLED=true 时恢复邮箱密码登录
+  app.get('/auth/sso/config', async () => {
+    const sso = await ssoConfig();
+    // SSO 未配置时强制开放本地登录，避免锁死无法进入
+    const localLoginEnabled = !sso || process.env.LOCAL_AUTH_ENABLED === 'true';
+    return { sso, localLoginEnabled };
+  });
+
+  // 发起授权：后端生成 PKCE verifier 与 state，302 跳转 fn-sso
+  app.get('/auth/sso/start', async (req, reply) => {
+    // 回调地址动态取当前访问域名（外网域名:外网端口 / 内网IP:8787 都能用）
+    const redirectBase = `${req.protocol}://${req.headers.host}`;
+    const state = crypto.randomBytes(16).toString('hex');
+    try {
+      const { url, verifier } = await buildAuthorizeUrl(redirectBase, state);
+      reply.setCookie('sso_verifier', verifier, { ...ssoCookieOpts, maxAge: 600 });
+      reply.setCookie('sso_state', state, { ...ssoCookieOpts, maxAge: 600 });
+      return reply.redirect(url);
+    } catch (error) {
+      req.log.warn({ err: error }, 'sso start failed');
+      return reply.code(502).send({ error: error.message || 'sso_start_failed' });
+    }
+  });
+
+  // 授权回调：换 token → userinfo → 绑定/创建本地用户 → 签发本地 JWT
+  app.get('/auth/sso/callback', async (req, reply) => {
+    const { code, state, error } = req.query;
+    // 与 start 阶段保持一致：动态取当前访问域名
+    const redirectBase = `${req.protocol}://${req.headers.host}`;
+    if (error) return reply.redirect(`${redirectBase}/?sso=denied`);
+    const verifier = req.cookies?.sso_verifier;
+    const expectedState = req.cookies?.sso_state;
+    if (!code || !verifier || !state || state !== expectedState) {
+      return reply.redirect(`${redirectBase}/?sso=error`);
+    }
+    reply.clearCookie('sso_verifier', ssoCookieOpts);
+    reply.clearCookie('sso_state', ssoCookieOpts);
+    let info;
+    try {
+      info = await exchangeCode(code, verifier, `${redirectBase}/auth/sso/callback`);
+    } catch (err) {
+      req.log.warn({ err }, 'sso callback exchange failed');
+      return reply.redirect(`${redirectBase}/?sso=error`);
+    }
+
+    // 按 sso_sub 找用户；找不到再按邮箱找并绑定（同一个人用同一邮箱注册过）
+    let user = (await q('select * from users where sso_sub=$1', [info.sub])).rows[0];
+    if (!user && info.email) {
+      // 邮箱未经 IdP 验证（若提供该声明）时不自动绑定，避免邮箱被冒领
+      if (info.emailVerified === false) {
+        return reply.redirect(`${redirectBase}/?sso=error`);
+      }
+      const byEmail = await findUserByEmail(info.email);
+      // 仅在该邮箱尚未绑定其他 SSO 账号时绑定，避免覆盖已有关联
+      if (byEmail && !byEmail.sso_sub) {
+        await q('update users set sso_sub=$2 where id=$1', [byEmail.id, info.sub]);
+        user = byEmail;
+      }
+    }
+    if (!user) {
+      const id = crypto.randomUUID();
+      const email = info.email || `sso_${info.sub}@fn.local`;
+      const handleExisting = await findUserByEmail(email);
+      if (handleExisting) {
+        // 邮箱被占但没绑过（race），罕见，直接报错提示
+        return reply.code(409).send({ error: 'email_exists' });
+      }
+      await q(
+        'insert into users(id, email, password_hash, sso_sub) values($1, $2, null, $3)',
+        [id, email, info.sub]
+      );
+      user = (await q('select * from users where id=$1', [id])).rows[0];
+    }
+    const auth = await issueTokens(user.id);
+    // sso_auth 需前端落地到 localStorage，这里刻意不加 httpOnly
+    reply.setCookie('sso_auth', JSON.stringify({ ...auth, user: publicUser(user) }), {
+      ...ssoCookieOpts,
+      httpOnly: false,
+      maxAge: 60 * 60 * 24 * 30
+    });
+    return reply.redirect(`${redirectBase}/?sso=1`);
+  });
+
+  // 隐私密码验证：普通用户校验密码哈希；纯 SSO 用户校验独立隐私密码
   app.post('/auth/privacy/verify', { preHandler: authPreHandler() }, async (req, reply) => {
     const { password } = req.body || {};
     const user = (await q('select * from users where id=$1', [req.userId])).rows[0];
-    if (!user || !(await bcrypt.compare(password || '', user.password_hash))) {
-      return reply.code(401).send({ error: 'invalid_credentials' });
-    }
+    if (!user) return reply.code(401).send({ error: 'invalid_credentials' });
+    const valid = hasLocalPassword(user)
+      ? await bcrypt.compare(password || '', user.password_hash)
+      : Boolean(user.privacy_hash) && (await verifyPrivacyPassword(password || '', user.privacy_hash));
+    if (!valid) return reply.code(401).send({ error: 'invalid_credentials' });
     return { privacyToken: signPrivacy(req.userId) };
+  });
+
+  // 纯 SSO 账号：设置（或修改）隐私密码，用于开启隐私模式
+  app.post('/auth/privacy/set-password', { preHandler: authPreHandler() }, async (req, reply) => {
+    const { password } = req.body || {};
+    if (!password || password.length < 8) {
+      return reply.code(400).send({ error: 'password_min_8_required' });
+    }
+    const user = (await q('select * from users where id=$1', [req.userId])).rows[0];
+    if (!user || hasLocalPassword(user)) {
+      return reply.code(403).send({ error: 'local_password_only' });
+    }
+    await q('update users set privacy_hash=$2 where id=$1', [req.userId, await hashPrivacyPassword(password)]);
+    return { ok: true };
   });
 
   app.get('/items', { preHandler: authPreHandler() }, async (req, reply) => {

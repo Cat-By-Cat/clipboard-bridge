@@ -31,6 +31,9 @@ services:
       MAX_FILE_BYTES: 1073741824
       CORS_ORIGIN: '*'
       WEB_DIST_DIR: /app/web/dist
+      # SSO_ISSUER: http://a.gxc1994.top:28900
+      # SSO_CLIENT_ID: 你的_client_id
+      # SSO_CLIENT_SECRET: 你的_client_secret
     volumes:
       - uploads:/app/server/uploads
     ports:

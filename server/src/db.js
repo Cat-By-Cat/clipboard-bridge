@@ -22,7 +22,9 @@ export async function initDb() {
     create table if not exists users (
       id uuid primary key,
       email text unique not null,
-      password_hash text not null,
+      password_hash text,
+      privacy_hash text,
+      sso_sub text unique,
       created_at timestamptz not null default now()
     );
 
@@ -58,6 +60,15 @@ export async function initDb() {
 
     create index if not exists sent_items_user_created_idx on sent_items(user_id, created_at desc);
     create index if not exists files_user_idx on files(user_id);
+
+    -- 兼容旧库：为已存在的表补充 SSO 相关列（重复执行安全）
+    alter table users add column if not exists password_hash text;
+    alter table users add column if not exists privacy_hash text;
+    alter table users add column if not exists sso_sub text;
+    -- 旧库 password_hash 为 not null，SSO 用户无本地密码需放开
+    alter table users alter column password_hash drop not null;
+    -- 旧库升级时补 sso_sub 唯一索引（新建库已含 unique 约束）
+    create unique index if not exists users_sso_sub_key on users(sso_sub);
   `);
 }
 

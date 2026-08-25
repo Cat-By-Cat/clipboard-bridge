@@ -160,6 +160,12 @@ button:disabled {
   color: #26364d;
 }
 
+/* 纯 SSO 登录时按钮占满宽度 */
+.full {
+  width: 100%;
+  justify-content: center;
+}
+
 .success {
   background: #187052;
   color: #ffffff;
