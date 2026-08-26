@@ -315,6 +315,18 @@ function App() {
     }
   }
 
+  // 文本框粘贴：若剪贴板含文件（截图/复制的图片等），自动转为文件发送
+  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const pasted = event.clipboardData?.files;
+    if (pasted && pasted.length > 0) {
+      event.preventDefault();
+      setFile(pasted[0]);
+      setStatus('');
+      // 自动滚动到文件区提示已就绪
+      document.querySelector('.composer .compose-section:last-of-type')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
+
   async function sendText(event: FormEvent) {
     event.preventDefault();
     if (!text.trim()) return;
@@ -515,7 +527,13 @@ function App() {
         <aside className="composer">
           <form onSubmit={sendText} className="compose-section">
             <h2>发送文本</h2>
-            <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="输入要发送的文本" rows={7} />
+            <textarea
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              onPaste={handlePaste}
+              placeholder="输入要发送的文本（直接粘贴截图/图片也会自动转为文件发送）"
+              rows={7}
+            />
             <PrivacyToggle checked={isPrivate} onChange={setIsPrivate} />
             <button className="primary" disabled={busy || !text.trim()}>
               <Send size={18} />
