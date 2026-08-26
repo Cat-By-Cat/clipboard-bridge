@@ -123,15 +123,25 @@ function App() {
 
   // 探测 SSO 配置；回调落地后消费 sso_auth cookie
   useEffect(() => {
+    let cancelled = false;
     fetch('/auth/sso/config')
       .then((res) => res.json())
       .then((data) => {
+        if (cancelled) return;
+        let enabled = false;
         if (data?.sso?.enabled) {
+          enabled = true;
           setSsoEnabled(true);
           if (data.sso.name) setSsoName(data.sso.name);
         }
         if (typeof data?.localLoginEnabled === 'boolean') {
           setLocalLoginEnabled(data.localLoginEnabled);
+        }
+        // 仅 SSO 模式（本地登录隐藏）：自动发起单点登录，无需用户点击
+        const params = new URLSearchParams(window.location.search);
+        const isCallbackReturn = Boolean(params.get('sso')) || window.location.pathname.endsWith('/auth/sso/callback');
+        if (enabled && data?.localLoginEnabled === false && !isCallbackReturn && !auth) {
+          window.location.href = '/auth/sso/start';
         }
       })
       .catch(() => {});
@@ -150,7 +160,9 @@ function App() {
       if (params.get('sso') === 'error') setSsoError('单点登录失败，请重试');
       window.history.replaceState({}, '', window.location.pathname);
     }
-  }, []);
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth]);
 
   useEffect(() => {
     loadItems().catch((err) => setStatus(err.message));
