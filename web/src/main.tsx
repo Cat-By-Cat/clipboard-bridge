@@ -315,15 +315,33 @@ function App() {
     }
   }
 
-  // 文本框粘贴：若剪贴板含文件（截图/复制的图片等），自动转为文件发送
+  // 上传文件（供上传按钮与粘贴自动发送共用）
+  async function uploadFile(target: File) {
+    setBusy(true);
+    setStatus('');
+    try {
+      const body = new FormData();
+      body.set('isPrivate', String(isPrivate));
+      body.set('file', target);
+      await request('/items/file', { method: 'POST', body });
+      setFile(null);
+      setIsPrivate(false);
+      if (fileInput.current) fileInput.current.value = '';
+      await loadItems();
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : '上传失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 文本框粘贴：若剪贴板含文件（截图/复制的图片等），自动转为文件并直接发送
   function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const pasted = event.clipboardData?.files;
     if (pasted && pasted.length > 0) {
       event.preventDefault();
-      setFile(pasted[0]);
       setStatus('');
-      // 自动滚动到文件区提示已就绪
-      document.querySelector('.composer .compose-section:last-of-type')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      uploadFile(pasted[0]);
     }
   }
 
@@ -349,22 +367,7 @@ function App() {
 
   async function sendFile() {
     if (!file) return;
-    setBusy(true);
-    setStatus('');
-    try {
-      const body = new FormData();
-      body.set('isPrivate', String(isPrivate));
-      body.set('file', file);
-      await request('/items/file', { method: 'POST', body });
-      setFile(null);
-      setIsPrivate(false);
-      if (fileInput.current) fileInput.current.value = '';
-      await loadItems();
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : '上传失败');
-    } finally {
-      setBusy(false);
-    }
+    await uploadFile(file);
   }
 
   async function verifyPrivacy(event: FormEvent) {
@@ -531,7 +534,7 @@ function App() {
               value={text}
               onChange={(event) => setText(event.target.value)}
               onPaste={handlePaste}
-              placeholder="输入要发送的文本（直接粘贴截图/图片也会自动转为文件发送）"
+              placeholder="输入要发送的文本（直接粘贴截图/图片会自动发送）"
               rows={7}
             />
             <PrivacyToggle checked={isPrivate} onChange={setIsPrivate} />
