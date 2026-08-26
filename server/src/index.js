@@ -364,6 +364,34 @@ export async function buildApp() {
     return { item: publicItem(row) };
   });
 
+  // 删除发送记录（文本或文件；文件同时删除磁盘文件与 files 记录）
+  app.delete('/items/:id', { preHandler: authPreHandler() }, async (req, reply) => {
+    const item = (await q(
+      `select * from sent_items where id = $1 and user_id = $2`,
+      [req.params.id, req.userId]
+    )).rows[0];
+    if (!item) return reply.code(404).send({ error: 'item_not_found' });
+
+    if (item.type === 'file' && item.file_id) {
+      const fileRow = (await q(
+        `select storage_path from files where id = $1 and user_id = $2`,
+        [item.file_id, req.userId]
+      )).rows[0];
+      if (fileRow) {
+        await q(`delete from files where id = $1`, [item.file_id]);
+        try {
+          if (fs.existsSync(fileRow.storage_path)) fs.unlinkSync(fileRow.storage_path);
+        } catch (err) {
+          req.log.warn({ err, path: fileRow.storage_path }, '删除磁盘文件失败');
+        }
+      }
+    }
+
+    await q(`delete from sent_items where id = $1`, [item.id]);
+    broadcastUserChanged(req.userId);
+    return { ok: true };
+  });
+
   async function sendFile(req, reply, disposition) {
     const row = await itemForFile(req.params.id, req.userId);
     if (!row) return reply.code(404).send({ error: 'file_not_found' });

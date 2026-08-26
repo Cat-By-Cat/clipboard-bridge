@@ -186,6 +186,15 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+/* 危险操作（删除）按钮：红色系 */
+.icon-only.danger {
+  color: #b91c1c;
+}
+.icon-only.danger:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+
 .top-actions {
   display: flex;
   align-items: center;

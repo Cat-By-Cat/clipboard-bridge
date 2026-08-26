@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
+  Trash2,
   Upload
 } from 'lucide-react';
 import './styles.css';
@@ -447,6 +448,18 @@ function App() {
     }
   }
 
+  async function deleteItem(item: SentItem) {
+    const label = item.type === 'text' ? '这条文本' : `文件「${item.fileName || ''}」`;
+    if (!window.confirm(`确定删除${label}吗？此操作不可恢复。`)) return;
+    try {
+      await request(`/items/${item.id}`, { method: 'DELETE' }, false);
+      setItems((prev) => prev.filter((it) => it.id !== item.id));
+      setStatus('已删除');
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : '删除失败');
+    }
+  }
+
   function logout() {
     localStorage.removeItem(savedAuthKey);
     for (const url of Object.values(thumbnailUrls.current)) URL.revokeObjectURL(url);
@@ -611,6 +624,9 @@ function App() {
                       </button>
                     </>
                   )}
+                  <button className="ghost icon-only danger" title="删除" aria-label="删除" onClick={() => deleteItem(item)}>
+                    <Trash2 size={18} />
+                  </button>
                 </div>
               </article>
             ))}
